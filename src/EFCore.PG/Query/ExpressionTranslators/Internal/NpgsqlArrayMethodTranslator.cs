@@ -73,20 +73,27 @@ namespace Npgsql.EntityFrameworkCore.PostgreSQL.Query.ExpressionTranslators.Inte
             // since non-PG SQL does not support arrays. If the list is a constant we leave it for regular IN
             // (functionality the same but more familiar).
 
-            // TODO: The following does not work correctly if there are any nulls in a parameterized array, because
-            // of null semantics (test: Contains_on_nullable_array_produces_correct_sql).
-            // https://github.com/aspnet/EntityFrameworkCore/issues/15892 tracks caching based on parameter values,
-            // which should allow us to enable this and have correct behavior.
-
-            // We still apply this translation when it's on a column expression, since that can't work anyway with
-            // EF Core's parameter to constant expansion
+            // Note: we exclude constant array expressions from this PG-specific optimization since the general
+            // EF Core mechanism is fine for that case. After https://github.com/aspnet/EntityFrameworkCore/issues/16375
+            // is done we may not need the check any more.
 
             if (method.IsClosedFormOf(Contains) &&
-                arrayOperand is ColumnExpression &&
-                //!(arrayOperand is SqlConstantExpression) &&   // When the null semantics issue is resolved
+                !(arrayOperand is SqlConstantExpression) &&
                 _sqlExpressionFactory.FindMapping(arrayOperand.Type) != null)
             {
-                return _sqlExpressionFactory.ArrayAnyAll(arguments[1], arrayOperand, ArrayComparisonType.Any, "=");
+                var item = arguments[1];
+                // We require a null semantics check in case the item is null and the array contains a null.
+                // Advanced parameter sniffing would help here: https://github.com/aspnet/EntityFrameworkCore/issues/17598
+                return _sqlExpressionFactory.OrElse(
+                    _sqlExpressionFactory.ArrayAnyAll(item, arrayOperand, ArrayComparisonType.Any, "="),
+                    _sqlExpressionFactory.AndAlso(
+                        _sqlExpressionFactory.IsNull(item),
+                        // To check whether the array contains null, we use the construct array_position(array, NULL) IS NOT NULL.
+                        // See https://stackoverflow.com/a/34848472/640325)
+                        _sqlExpressionFactory.IsNotNull(
+                            _sqlExpressionFactory.Function("array_position", new[] {
+                                arrayOperand, _sqlExpressionFactory.Fragment("NULL")
+                            }, typeof(int)))));
             }
 
             // Note: we also translate .Where(e => new[] { "a", "b", "c" }.Any(p => EF.Functions.Like(e.SomeText, p)))

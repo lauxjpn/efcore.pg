@@ -225,26 +225,44 @@ WHERE c.""CustomerID"" IN ('ALFKI', 'ANATR')");
         [MemberData(nameof(IsAsyncData))]
         public async Task Array_Contains_parameter(bool isAsync)
         {
-            var ids = new[] { "ALFKI", "ANATR" };
+            var regions = new[] { "UK", "SP" };
 
             await AssertQuery<Customer>(isAsync, cs => cs
-                    .Where(c => ids.Contains(c.CustomerID)),
-                entryCount: 2);
+                    .Where(c => regions.Contains(c.Region)),
+                entryCount: 6);
 
-            // Instead of c.""CustomerID"" x in ('ALFKI', 'ANATR') we should generate the PostgreSQL-specific x = ANY (a, b, c), which can
-            // be parameterized. This is currently disabled because of null semantics, until EF Core supports caching
-            // based on parameter values (https://github.com/aspnet/EntityFrameworkCore/issues/15892#issuecomment-513399906).
-
+            // Instead of c.""Region"" IN ('UK', 'SP') we generate the PostgreSQL-specific x = ANY (a, b, c), which can
+            // be parameterized.
+            // Ideally parameter sniffing would allow us to produce SQL without the null check since the regions array doesn't contain one
+            // (see https://github.com/aspnet/EntityFrameworkCore/issues/17598).
             AssertSql(
-                @"SELECT c.""CustomerID"", c.""Address"", c.""City"", c.""CompanyName"", c.""ContactName"", c.""ContactTitle"", c.""Country"", c.""Fax"", c.""Phone"", c.""PostalCode"", c.""Region""
+                @"@__regions_0='System.String[]' (DbType = Object)
+
+SELECT c.""CustomerID"", c.""Address"", c.""City"", c.""CompanyName"", c.""ContactName"", c.""ContactTitle"", c.""Country"", c.""Fax"", c.""Phone"", c.""PostalCode"", c.""Region""
 FROM ""Customers"" AS c
-WHERE c.""CustomerID"" IN ('ALFKI', 'ANATR')");
-//            AssertSql(
-//                @"@__ids_0='System.String[]' (DbType = Object)
-//
-//SELECT c.""CustomerID"", c.""Address"", c.""City"", c.""CompanyName"", c.""ContactName"", c.""ContactTitle"", c.""Country"", c.""Fax"", c.""Phone"", c.""PostalCode"", c.""Region""
-//FROM ""Customers"" AS c
-//WHERE c.""CustomerID"" = ANY (@__ids_0)");
+WHERE c.""Region"" = ANY (@__regions_0) OR ((c.""Region"" IS NULL) AND (array_position(@__regions_0, NULL) IS NOT NULL))");
+        }
+
+        [ConditionalTheory]
+        [MemberData(nameof(IsAsyncData))]
+        public async Task Array_Contains_parameter_with_null(bool isAsync)
+        {
+            var regions = new[] { "UK", "SP", null };
+
+            await AssertQuery<Customer>(isAsync, cs => cs
+                    .Where(c => regions.Contains(c.Region)),
+                entryCount: 66);
+
+            // Instead of c.""Region"" IN ('UK', 'SP') we generate the PostgreSQL-specific x = ANY (a, b, c), which can
+            // be parameterized.
+            // Ideally parameter sniffing would allow us to produce SQL with an optimized null check (no need to check the array server-side)
+            // (see https://github.com/aspnet/EntityFrameworkCore/issues/17598).
+            AssertSql(
+                @"@__regions_0='System.String[]' (DbType = Object)
+
+SELECT c.""CustomerID"", c.""Address"", c.""City"", c.""CompanyName"", c.""ContactName"", c.""ContactTitle"", c.""Country"", c.""Fax"", c.""Phone"", c.""PostalCode"", c.""Region""
+FROM ""Customers"" AS c
+WHERE c.""Region"" = ANY (@__regions_0) OR ((c.""Region"" IS NULL) AND (array_position(@__regions_0, NULL) IS NOT NULL))");
         }
 
         #endregion Array contains
